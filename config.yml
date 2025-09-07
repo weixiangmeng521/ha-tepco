@@ -1,0 +1,22 @@
+name: "Enecle エネクル"
+description: "Unofficial add-on for Enecle (エネクル) gas monitoring service."
+version: "1.4.1"
+slug: "enecle"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: services
+options:
+  username: ""
+  password: ""
+  long_live_token: ""
+schema:
+  username: str
+  password: password
+  long_live_token: str
+ports:
+  8444/tcp: 8444
