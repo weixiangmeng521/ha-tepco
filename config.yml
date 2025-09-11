@@ -1,6 +1,6 @@
 name: "Tepco 東京電力"
 description: "Unofficial add-on for Tepco (東京電力) power monitoring service."
-version: "0.0.3"
+version: "4.0.3"
 slug: "Tepco"
 init: false
 arch:
