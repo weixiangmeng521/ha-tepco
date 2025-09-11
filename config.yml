@@ -1,6 +1,6 @@
 name: "Tepco 東京電力"
 description: "Unofficial add-on for Tepco (東京電力) power monitoring service."
-version: "4.0.3"
+version: "4.0.4"
 slug: "Tepco"
 init: false
 arch:
@@ -19,4 +19,4 @@ schema:
   password: password
   long_live_token: str
 ports:
-  8444/tcp: 8444
+  8444/tcp: 8445
