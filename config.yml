@@ -1,7 +1,7 @@
-name: "Enecle エネクル"
-description: "Unofficial add-on for Enecle (エネクル) gas monitoring service."
+name: "Tepco 東京電力"
+description: "Unofficial add-on for Tepco (東京電力) power monitoring service."
 version: "0.0.1"
-slug: "enecle"
+slug: "Tepco"
 init: false
 arch:
   - aarch64
@@ -18,5 +18,3 @@ schema:
   username: str
   password: password
   long_live_token: str
-ports:
-  8444/tcp: 8444

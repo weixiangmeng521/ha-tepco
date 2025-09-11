@@ -1,4 +1,4 @@
-module myenecle
+module tepco
 
 go 1.25.1
 

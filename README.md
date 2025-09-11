@@ -1,6 +1,6 @@
 # ha-TEPCO
 
-Unofficial add-on for Enecle (Tokyo Electric Power Company) power monitoring service.
+Unofficial add-on for TEPCO (Tokyo Electric Power Company) power monitoring service.
 
 ## Features
 
