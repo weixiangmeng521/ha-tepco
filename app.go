@@ -8,18 +8,18 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"golang.org/x/net/html"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
 )
 
 const HA_URL = "http://homeassistant.local:8123"
+
+const LOGIN_PAGE = "https://epauth.tepco.co.jp/u/login?state"
 
 func main() {
 	var username string
@@ -34,239 +34,203 @@ func main() {
 		log.Fatal("missing USERNAME, PASSWORD, HA_TOKEN env")
 	}
 
-	// 启动时先跑一次（可删）
 	task(username, password, haToken)
-
-	// ticker := time.NewTicker(15 * time.Minute)
-	// defer ticker.Stop()
-
-	// // 循环执行
-	// for range ticker.C {
-	// 	task(username, password, haToken)
-	// }
 }
 
-func task(username string, password string, haToken string) {
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Jar: jar}
+/**
+ *
+ */
+func task(username, password, haToken string) string {
+	// 启动浏览器
+	// 启动浏览器
+	l := launcher.New().
+		Headless(false).                                       // headless 模式
+		Set("no-sandbox", "").                                 // --no-sandbox
+		Set("disable-dev-shm-usage", "").                      // --disable-dev-shm-usage
+		Set("disable-gpu", "").                                // --disable-gpu
+		Set("lang", "ja").                                     // --lang=ja
+		Set("disable-desktop-notifications", "").              // --disable-desktop-notifications
+		Set("disable-blink-features", "AutomationControlled"). // --disable-blink-features=AutomationControlled
+		Set("ignore-certificate-errors", "").                  // --ignore-certificate-errors
+		Set("disable-extensions", "").                         // --disable-extensions
+		Set("window-size", "1920,1080").                       // --window-size=1920,1080
+		Set("user-agent", "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36").
+		MustLaunch()
 
-	// Step 1: get login page, extract token
-	log.Println("Tring to get form token......")
-	loginPage, err := client.Get("https://myenecle.com/Login")
+	browser := rod.New().ControlURL(l).MustConnect()
+	defer browser.MustClose()
+
+	// 打开登录页面
+	page := browser.
+		MustPage(LOGIN_PAGE)
+
+	page.MustWaitDOMStable()
+
+	// 填写用户名和密码
+	page.MustElement("input[name='username']").MustInput(username)
+	page.MustElement("input[name='password']").MustInput(password)
+	page.MustWaitIdle()
+	// // 提交表单
+	page.MustElement(`button[value="default"]`).MustClick()
+	page.MustWaitNavigation()
+
+	page.MustWaitDOMStable()
+	html, err := page.HTML()
 	if err != nil {
-		log.Fatal("failed to fetch login page:", err)
-	}
-	body, _ := io.ReadAll(loginPage.Body)
-	defer loginPage.Body.Close()
-
-	token := extractToken(string(body))
-	log.Println("Fetched token:", token)
-
-	// Step 2: login
-	log.Println("Tring to login......")
-	form := url.Values{}
-	form.Add("__RequestVerificationToken", token)
-	form.Add("MailAddress", username)
-	form.Add("Password", password)
-	encodedForm := form.Encode() // 转成 "key1=value1&key2=value2" 形式
-	buffer := bytes.NewBufferString(encodedForm)
-	req, err := http.NewRequest("POST", "https://myenecle.com/Login", buffer)
-	if err != nil {
-		log.Fatal("failed to create request:", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded") // 设置表单类型
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatal("failed to login:", err)
-	}
-	defer resp.Body.Close()
-
-	// 正则匹配 <div class="validation-summary-errors"> 里所有 <li> 内容
-	re := regexp.MustCompile(`<div class="validation-summary-errors"[^>]*>.*?<ul>.*?<li>(.*?)</li>`)
-	body, _ = io.ReadAll(resp.Body)
-	matches := re.FindAllStringSubmatch(string(body), -1)
-	for _, m := range matches {
-		if len(m) > 1 {
-			decoded := html.UnescapeString(m[1])
-			log.Println("Login fail something wrong with: " + decoded)
-			return
-		}
+		log.Println(err)
+		return ""
 	}
 
-	// 现在 cookies 都被 Jar 保存了
-	u, _ := url.Parse("https://myenecle.com")
-	for _, c := range jar.Cookies(u) {
-		log.Printf("{ Key: %s, Value: %s }\n", c.Name, c.Value)
+	// initlize http cline
+	client := &http.Client{}
+
+	// 正则匹配 span 标签内容（去掉内部 icon span）
+	re := regexp.MustCompile(`(?s)<span[^>]*id="error-element-password"[^>]*>.*?</span>\s*([^<]+)</span>`)
+	matches := re.FindStringSubmatch(html)
+
+	page.MustWaitNavigation()
+	page.MustWaitDOMStable()
+	if len(matches) > 1 {
+		log.Println("Login Fail: ", matches[1])
+		return ""
+	}
+	page.MustWaitNavigation()
+	page.MustWaitDOMStable()
+	log.Println("Login Successful.")
+
+	log.Printf("Info: close popup")
+
+	// close ads script
+	exeCloseAdsScript(page)
+
+	lastMonPowerDataList := exeGetLastestMonCostAndUsageScript(page)
+	log.Printf("Last month cost money: %d 円, usage: %d kWh\n", lastMonPowerDataList[0], lastMonPowerDataList[1])
+
+	thisMonPowerDataList := exeGetThisMonCostAndUsageScript(page)
+	log.Printf("This month cost money: %d 円, usage: %d kWh\n", thisMonPowerDataList[0], thisMonPowerDataList[1])
+
+	//
+	log.Println("Tring to push tepco_last_mon_usage")
+	if err := pushEnergySensor(client, haToken, "sensor.tepco_last_mon_cost", float64(lastMonPowerDataList[0]), "JPY", "monetary"); err != nil {
+		log.Println("Err: ", err)
 	}
 
-	// Step 3: fetch MyPageTop
-	mypage, err := client.Get("https://myenecle.com/MyPage/MyPageTop")
-	if err != nil {
-		log.Fatal("failed to fetch mypage:", err)
+	// 燃气费用
+	log.Println("Tring to push tepco_last_mon_cost")
+	if err := pushEnergySensor(client, haToken, "sensor.tepco_last_mon_usage", float64(lastMonPowerDataList[1]), "kWh", "energy"); err != nil {
+		log.Println("Err: ", err)
 	}
-	mpbody, _ := io.ReadAll(mypage.Body)
-	defer mypage.Body.Close()
 
-	// log.Println(string(mpbody))
-	// usage
-	usage := extractUsage(string(mpbody))
-	cost := extractCost(string(mpbody))
-	annualUsageMap := extractAnnualUsageMap(string(mpbody))
-	usages, total := extractAnnualUsages(string(mpbody))
-
-	log.Println("Gas usage:", usage)
-	log.Println("Gas cost:", cost)
-	log.Println("Annual usage map:", annualUsageMap)
-	log.Println("Annual usage statics:", usages)
-	log.Println("Annual usage:", total)
-
-	if err := pushAllEnergySensors(client, haToken, usage, cost, total, usages); err != nil {
-		log.Println("Push message to sensor err: ", err)
+	//
+	log.Println("Tring to push tepco_this_mon_cost")
+	if err := pushEnergySensor(client, haToken, "sensor.tepco_this_mon_cost", float64(thisMonPowerDataList[0]), "JPY", "monetary"); err != nil {
+		log.Println("Err: ", err)
 	}
-}
 
-// 提取 __RequestVerificationToken
-func extractToken(htmlBody string) string {
-	re := regexp.MustCompile(`name="__RequestVerificationToken"[^>]*value="([^"]+)"`)
-	m := re.FindStringSubmatch(htmlBody)
-	if len(m) > 1 {
-		return m[1]
+	log.Println("Tring to push tepco_this_mon_usage")
+	if err := pushEnergySensor(client, haToken, "sensor.tepco_this_mon_usage", float64(thisMonPowerDataList[1]), "kWh", "energy"); err != nil {
+		log.Println("Err: ", err)
 	}
+
 	return ""
 }
 
-// extractUsage 提取 HTML 中 <em> 标签内的数字
-func extractUsage(htmlBody string) float64 {
-	// 正则：前面必须有指定的 span，捕获 <em> 内的数字
-	re := regexp.MustCompile(`<span>&#x3054;&#x4F7F;&#x7528;&#x91CF;</span>\s*<span><em>([\d.]+)</em>`)
-	m := re.FindStringSubmatch(htmlBody)
-	if len(m) > 1 {
-		// 转换为 float64
-		f, err := strconv.ParseFloat(m[1], 64)
-		if err != nil {
-			log.Println("Convert err", err)
-			return 0
-		}
+// 执行关闭广告的脚本
+func exeCloseAdsScript(page *rod.Page) {
+	// close ads script
+	javascript := rod.Eval(`
+		() => {
+		 	const list = ["close_icon", "close_about", "close_button", "btn_close"];
+		 	list.forEach((el) => {
+				const nodeList = document.getElementsByClassName(el);
+				Array.from(nodeList).forEach((node) => {
+					node.click();
+				})
+			})
+			return void 0;
+		}`)
 
-		log.Println("float64:", f)
-		return f
+	for closeAttempts := 0; ; closeAttempts++ {
+		log.Println("Tring to close ads")
+		if _, err := page.Evaluate(javascript); err != nil {
+			log.Printf("error: %v\n", err)
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+		if closeAttempts > 20 {
+			break
+		}
 	}
-	return 0
 }
 
-// // extractUsage 提取 HTML 中 <h3> 标签内的数字
-// // extractCost 提取 HTML 中 <h3> 标签内的数字
-// func extractCost(htmlBody string) float64 {
-// 	re := regexp.MustCompile(`<h3 class="idxprc__sum">([\d,]+)円</h3>`)
-// 	m := re.FindStringSubmatch(htmlBody)
-// 	if len(m) > 1 {
-// 		// 去掉千位分隔符
-// 		numStr := strings.ReplaceAll(m[1], ",", "")
-// 		f, err := strconv.ParseFloat(numStr, 64)
-// 		if err != nil {
-// 			fmt.Println("Convert err:", err)
-// 			return 0
-// 		}
+// 获取最近一个月的电费和使用量
+func exeGetLastestMonCostAndUsageScript(page *rod.Page) [2]int {
+	log.Println("Execute get lastest Month Cost script...")
+	// close ads script
+	javascript := rod.Eval(`
+		() => {
+		 	document.querySelector("#gaclick_top_graph_yen").click();
+			const btnList = Array.from(document.querySelector("ul.month_list").childNodes).filter(e => e.nodeName !== "#comment");
+			const target = btnList[btnList.length - 2];
+			target.click();
+			const cost = document.querySelector("p.price.selected_month").innerText;
+			document.querySelector("#gaclick_top_graph_kwh").click();
+			const usage = document.querySelector("p.price.selected_month").innerText;
+			return usage + "|" + cost
+		}`)
 
-// 		fmt.Println("float64:", f)
-// 		return f
-// 	}
-// 	return 0
-// }
-
-// extractCost 提取 HTML 中 <h3> 标签内的数字
-func extractCost(htmlBody string) float64 {
-	re := regexp.MustCompile(`<h3 class="idxprc__sum">([\d,]+)円</h3>`)
-	m := re.FindStringSubmatch(htmlBody)
-	if len(m) > 1 {
-		// 去掉千位分隔符
-		numStr := strings.ReplaceAll(m[1], ",", "")
-		f, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			log.Println("Convert err:", err)
-			return 0
-		}
-		return f
-	}
-	return 0
-}
-
-// parse data from html
-func getAnnualUsagesData(htmlBody string) map[string]interface{} {
-	re := regexp.MustCompile(`data:\s*(\{[\s\S]*?\})\s*,\s*options:`)
-	match := re.FindStringSubmatch(htmlBody)
-	var result map[string]interface{}
-	if len(match) == 0 {
-		return result
-	}
-	jsObject := match[1]
-	// fmt.Println(jsObject)
-
-	jsObject = strings.ReplaceAll(jsObject, "'", `"`) // 单引号 -> 双引号
-
-	// 正则：给 key 加引号
-	keyRe := regexp.MustCompile(`(\w+):`)
-	jsObject = keyRe.ReplaceAllString(jsObject, `"$1":`)
-
-	// 去掉可能的末尾逗号
-	jsObject = strings.ReplaceAll(jsObject, ",}", "}")
-	jsObject = strings.ReplaceAll(jsObject, ",]", "]")
-
-	err := json.Unmarshal([]byte(jsObject), &result)
+	log.Println("Tring to excute javascript")
+	cost, err := page.Evaluate(javascript)
 	if err != nil {
-		log.Fatal("JSON parse error:", err)
+		log.Printf("error: %v\n", err)
+		return [2]int{0, 0}
 	}
-	return result
+	time.Sleep(300 * time.Millisecond)
+
+	result := cost.Value.Str()
+	list := strings.Split(result, "|")
+	return [2]int{extractNumberInt(list[0]), extractNumberInt(list[1])}
 }
 
-// 获取年度汇报
-func extractAnnualUsageMap(htmlBody string) []byte {
-	result := getAnnualUsagesData(htmlBody)
-	newMap := make(map[string]interface{})
-	// 提取 labels
-	newMap["month"] = result["labels"]
-	// 提取 datasets[0].data
-	datasets := result["datasets"].([]interface{})
-	if len(datasets) > 0 {
-		first := datasets[0].(map[string]interface{})
-		newMap["datasets"] = first["data"]
+// 获取本月的电费
+func exeGetThisMonCostAndUsageScript(page *rod.Page) [2]int {
+	log.Println("Execute get this Month cost script...")
+	javascript := rod.Eval(`
+		() => {
+		 	document.querySelector("#gaclick_top_graph_yen").click();
+			const btnList = Array.from(document.querySelector("ul.month_list").childNodes).filter(e => e.nodeName !== "#comment");
+			const target = btnList[btnList.length - 1];
+			target.click();
+			const cost = document.querySelector("p.price.selected_month").innerText;
+			document.querySelector("#gaclick_top_graph_kwh").click();
+			const usage = document.querySelector("p.price.selected_month").innerText;
+			return usage + "|" + cost
+		}`)
+
+	log.Println("Tring to excute javascript")
+	cost, err := page.Evaluate(javascript)
+	if err != nil {
+		log.Printf("error: %v\n", err)
+		return [2]int{0, 0}
 	}
-	data, _ := json.Marshal(newMap)
-	return data
+	time.Sleep(300 * time.Millisecond)
+
+	result := cost.Value.Str()
+	list := strings.Split(result, "|")
+	return [2]int{extractNumberInt(list[0]), extractNumberInt(list[1])}
 }
 
-// 获取年度汇报总结
-func extractAnnualUsage(htmlBody string) float64 {
-	result := getAnnualUsagesData(htmlBody) // 返回 map[string]interface{}
-	var total float64
-	// 提取 datasets
-	datasets, ok := result["datasets"].([]interface{})
-	if !ok || len(datasets) == 0 {
-		return 0
-	}
-	first, ok := datasets[0].(map[string]interface{})
-	if !ok {
-		return 0
-	}
-	dataList, ok := first["data"].([]interface{})
-	if !ok {
-		return 0
-	}
-	// 累加每个月的数据
-	for _, v := range dataList {
-		switch val := v.(type) {
-		case float64:
-			total += val
-		case string:
-			// 字符串转 float64
-			f, err := strconv.ParseFloat(strings.ReplaceAll(val, ",", ""), 64)
-			if err == nil {
-				total += f
-			}
-		}
-	}
-	return total
+func extractNumber(s string) string {
+	re := regexp.MustCompile(`[\d,]+`)
+	match := re.FindString(s)
+	// 去掉逗号
+	return strings.ReplaceAll(match, ",", "")
+}
+
+func extractNumberInt(s string) int {
+	str := extractNumber(s)
+	n, _ := strconv.Atoi(str)
+	return n
 }
 
 // pushEnergySensor 推送一个能源面板可识别的传感器
@@ -300,157 +264,6 @@ func pushEnergySensor(client *http.Client, haToken, entity string, state float64
 	if res.StatusCode != 200 {
 		return fmt.Errorf("HA API returned %s", res.Status)
 	}
-
-	return nil
-}
-
-// -----------------------------
-// 数据结构
-// -----------------------------
-
-type MonthlyUsage struct {
-	Month string  `json:"month"`
-	Value float64 `json:"value"`
-}
-
-// extractAnnualUsages 提取每月用量 + 计算总和
-func extractAnnualUsages(htmlBody string) ([]MonthlyUsage, float64) {
-	result := getAnnualUsagesData(htmlBody) // 你已有的函数，返回 map[string]interface{}
-	var total float64
-	var usages []MonthlyUsage
-
-	// 提取 labels (月份)
-	labels, ok := result["labels"].([]interface{})
-	if !ok {
-		return usages, 0
-	}
-
-	// 提取 datasets
-	datasets, ok := result["datasets"].([]interface{})
-	if !ok || len(datasets) == 0 {
-		return usages, 0
-	}
-	first, ok := datasets[0].(map[string]interface{})
-	if !ok {
-		return usages, 0
-	}
-	dataList, ok := first["data"].([]interface{})
-	if !ok {
-		return usages, 0
-	}
-
-	// 遍历每月数据
-	for i, v := range dataList {
-		var val float64
-		switch t := v.(type) {
-		case float64:
-			val = t
-		case string:
-			f, err := strconv.ParseFloat(strings.ReplaceAll(t, ",", ""), 64)
-			if err == nil {
-				val = f
-			}
-		}
-		if i < len(labels) {
-			monthStr, _ := labels[i].(string)
-			usages = append(usages, MonthlyUsage{
-				Month: monthStr,
-				Value: val,
-			})
-		}
-		total += val
-	}
-
-	return usages, total
-
-}
-
-// -----------------------------
-
-// 工具函数：月份字符串转数字
-// -----------------------------
-func monthToNumber(m string) int {
-	m = strings.TrimSuffix(m, "月")
-	num, _ := strconv.Atoi(m)
-	return num
-}
-
-// -----------------------------
-// 上传到 Home Assistant 统计接口
-// -----------------------------
-func pushMonthlyUsage(client *http.Client, haURL, haToken, entityID string, usages []MonthlyUsage) error {
-	// 按月份升序
-	sort.Slice(usages, func(i, j int) bool {
-		return monthToNumber(usages[i].Month) < monthToNumber(usages[j].Month)
-	})
-
-	loc, _ := time.LoadLocation("Asia/Tokyo")
-
-	for _, u := range usages {
-		month := monthToNumber(u.Month)
-		ts := time.Date(2025, time.Month(month), 1, 0, 0, 0, 0, loc).UTC()
-
-		payload := map[string]interface{}{
-			"state": u.Value,
-			"attributes": map[string]interface{}{
-				"unit_of_measurement": "m³",
-				"friendly_name":       "Enecle Last Month Usage",
-				"state_class":         "measurement",
-			},
-			"last_updated": ts.Format(time.RFC3339),
-		}
-
-		body, _ := json.Marshal(payload)
-		url := haURL + "/api/states/" + entityID
-
-		req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-		req.Header.Set("Authorization", "Bearer "+haToken)
-		req.Header.Set("Content-Type", "application/json")
-
-		res, err := client.Do(req)
-		if err != nil {
-			return err
-		}
-		respBody, _ := io.ReadAll(res.Body)
-		res.Body.Close()
-
-		log.Printf("=====> Pushing usage %.2f m³ for %s (UTC %s)\nHA Response: %s %s\n",
-			u.Value, u.Month, ts.Format(time.RFC3339), res.Status, string(respBody))
-
-		if res.StatusCode != 200 && res.StatusCode != 201 {
-			return fmt.Errorf("failed to push usage for %s: %s", u.Month, string(respBody))
-		}
-	}
-
-	return nil
-}
-
-// pushAllEnergySensors 推送燃气用量、费用、年度累计三个传感器
-func pushAllEnergySensors(client *http.Client, haToken string, usage, cost, annualUsage float64, usages []MonthlyUsage) error {
-	// 燃气用量
-	log.Println("Tring to push enecle_last_mon_usage")
-	if err := pushEnergySensor(client, haToken, "sensor.enecle_last_mon_usage", usage, "m³", "gas"); err != nil {
-		return err
-	}
-
-	// 燃气费用
-	log.Println("Tring to push enecle_last_mon_cost")
-	if err := pushEnergySensor(client, haToken, "sensor.enecle_last_mon_cost", cost, "JPY", "monetary"); err != nil {
-		return err
-	}
-
-	// 年度累计燃气量
-	log.Println("Tring to push enecle_annual_usage")
-	if err := pushEnergySensor(client, haToken, "sensor.enecle_annual_usage", annualUsage, "m³", "gas"); err != nil {
-		return err
-	}
-
-	// // 上传到 Home Assistant 统计 API
-	// log.Println("Tring to push enecle_usage")
-	// err := pushMonthlyUsage(client, HA_URL, haToken, "sensor.enecle_last_mon_usage", usages)
-	// if err != nil {
-	// 	return err
-	// }
 
 	return nil
 }

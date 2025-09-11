@@ -1,16 +1,18 @@
-# ha-myenecle
+# ha-TEPCO
 
-Unofficial add-on for Enecle (エネクル) gas monitoring service.
+Unofficial add-on for Enecle (Tokyo Electric Power Company) power monitoring service.
 
 ## Features
 
-- Update current month gas usage.
+- Update current month power usage.
 
 ## Installation
 
 - Add-on store 
 - Add to ur Respositories and download
 
+## Reference
+https://github.com/kitsuyaazuma/tepcollect/blob/main/main.go
 
 ## License
 This project is licensed under the Apache License, Version 2.0.  
