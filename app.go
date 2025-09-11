@@ -44,7 +44,7 @@ func task(username, password, haToken string) string {
 	// 启动浏览器
 	// 启动浏览器
 	l := launcher.New().
-		Headless(false).                                       // headless 模式
+		Headless(true).                                        // headless 模式
 		Set("no-sandbox", "").                                 // --no-sandbox
 		Set("disable-dev-shm-usage", "").                      // --disable-dev-shm-usage
 		Set("disable-gpu", "").                                // --disable-gpu
