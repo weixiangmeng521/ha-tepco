@@ -3,7 +3,14 @@ FROM $BUILD_FROM
 
 # Install requirements for add-on
 RUN apk add --no-cache 
-        
+       
+# 安装 Chromium（Debian/Ubuntu）
+RUN apt-get update && apt-get install -y chromium chromium-driver fonts-freefont-ttf && \
+    rm -rf /var/lib/apt/lists/*
+
+# 让 go-rod 使用系统 Chromium
+ENV ROD_BROWSER_PATH=/usr/bin/chromium
+
 LABEL \
     io.hass.version="VERSION" \
     io.hass.type="addon" \

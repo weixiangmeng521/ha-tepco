@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"crypto/md5"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -13,37 +11,63 @@ import (
 	"strings"
 	"time"
 
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 )
 
-const HA_URL = "http://homeassistant.local:8123"
-
 const LOGIN_PAGE = "https://epauth.tepco.co.jp/u/login?state"
+
+const (
+	Broker   = "mqtt://core-mosquitto:1883"
+	Username = "addons"
+	Password = "aiteab5elia9hee9ahp5chaoG1aegohcahzie9iigaewiaPeiquu1lau9Ho5Ooje"
+	ClientID = "myenecle-clinet"
+)
+
+var mqttClient mqtt.Client
+
+// MQTT 客户端初始化示例
+func newMQTTClient() mqtt.Client {
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(Broker)
+	opts.SetUsername(Username)
+	opts.SetPassword(Password)
+	opts.SetClientID(ClientID)
+	opts.SetConnectTimeout(5 * time.Second)
+
+	mqttClinet := mqtt.NewClient(opts)
+	if token := mqttClinet.Connect(); token.Wait() && token.Error() != nil {
+		log.Fatalf("MQTT connect error: %v", token.Error())
+	}
+	return mqttClinet
+}
 
 func main() {
 	var username string
 	var password string
-	var haToken string
 	flag.StringVar(&username, "u", "", "-u username")
 	flag.StringVar(&password, "p", "", "-p password")
-	flag.StringVar(&haToken, "t", "", "-t long live token")
 	flag.Parse()
 
-	if username == "" || password == "" || haToken == "" {
-		log.Fatal("missing USERNAME, PASSWORD, HA_TOKEN env")
+	if username == "" || password == "" {
+		log.Fatal("missing USERNAME, PASSWORD")
 	}
 
-	task(username, password, haToken)
+	mqttClient = newMQTTClient()
+	defer mqttClient.Disconnect(250)
+
+	task(username, password)
 }
 
 /**
  *
  */
-func task(username, password, haToken string) string {
+func task(username, password string) string {
 	// 启动浏览器
 	// 启动浏览器
 	l := launcher.New().
+		Bin("/usr/bin/chromium").
 		Headless(true).                                        // headless 模式
 		Set("no-sandbox", "").                                 // --no-sandbox
 		Set("disable-dev-shm-usage", "").                      // --disable-dev-shm-usage
@@ -111,24 +135,24 @@ func task(username, password, haToken string) string {
 
 	//
 	log.Println("Tring to push tepco_last_mon_usage")
-	if err := pushEnergySensor(client, haToken, "sensor.tepco_last_mon_cost", float64(lastMonPowerDataList[0]), "JPY", "monetary"); err != nil {
+	if err := pushEnergySensor(client, "sensor.tepco_last_mon_cost", float64(lastMonPowerDataList[0]), "JPY", "monetary"); err != nil {
 		log.Println("Err: ", err)
 	}
 
 	// 燃气费用
 	log.Println("Tring to push tepco_last_mon_cost")
-	if err := pushEnergySensor(client, haToken, "sensor.tepco_last_mon_usage", float64(lastMonPowerDataList[1]), "kWh", "energy"); err != nil {
+	if err := pushEnergySensor(client, "sensor.tepco_last_mon_usage", float64(lastMonPowerDataList[1]), "kWh", "energy"); err != nil {
 		log.Println("Err: ", err)
 	}
 
 	//
 	log.Println("Tring to push tepco_this_mon_cost")
-	if err := pushEnergySensor(client, haToken, "sensor.tepco_this_mon_cost", float64(thisMonPowerDataList[0]), "JPY", "monetary"); err != nil {
+	if err := pushEnergySensor(client, "sensor.tepco_this_mon_cost", float64(thisMonPowerDataList[0]), "JPY", "monetary"); err != nil {
 		log.Println("Err: ", err)
 	}
 
 	log.Println("Tring to push tepco_this_mon_usage")
-	if err := pushEnergySensor(client, haToken, "sensor.tepco_this_mon_usage", float64(thisMonPowerDataList[1]), "kWh", "energy"); err != nil {
+	if err := pushEnergySensor(client, "sensor.tepco_this_mon_usage", float64(thisMonPowerDataList[1]), "kWh", "energy"); err != nil {
 		log.Println("Err: ", err)
 	}
 
@@ -234,36 +258,50 @@ func extractNumberInt(s string) int {
 }
 
 // pushEnergySensor 推送一个能源面板可识别的传感器
-func pushEnergySensor(client *http.Client, haToken, entity string, state float64, unit, deviceClass string) error {
-	data := map[string]interface{}{
-		"state": state,
-		"attributes": map[string]interface{}{
-			"unit_of_measurement": unit,
-			"device_class":        deviceClass,
-			"state_class":         "total_increasing", // 必须是 total_increasing 才能被 Energy Panel 识别
-			"friendly_name":       entity,             // 用 entity 名称作为 friendly_name
+func pushEnergySensor(client *http.Client, entity string, state float64, unit, deviceClass string) error {
+	if mqttClient == nil {
+		mqttClient = newMQTTClient()
+	}
+
+	// 计算 unique_id / device.identifiers
+	hash := fmt.Sprintf("%x", md5.Sum([]byte(entity+deviceClass)))
+	uniqueID := hash[:8]
+	deviceID := hash[:3]
+
+	// 配置 Topic
+	// 确保 entity 只包含小写字母、数字和下划线
+	safeEntity := strings.ReplaceAll(entity, ".", "_")
+	configTopic := fmt.Sprintf("homeassistant/sensor/%s/config", safeEntity)
+	stateTopic := fmt.Sprintf("homeassistant/sensor/%s/state", safeEntity)
+
+	// 配置 Payload
+	configPayload := fmt.Sprintf(`{
+		"device_class": "%s",
+		"state_topic": "%s",
+		"unit_of_measurement": "%s",
+		"value_template": "{{ value_json.state }}",
+		"unique_id": "0x%s",
+		"device": {
+			"identifiers": ["%s"],
+			"name": "%s"
 		},
+		"state_class": "total"
+	}`, deviceClass, stateTopic, unit, uniqueID, entity+deviceID, entity)
+
+	// 发布 Discovery 配置
+	token := mqttClient.Publish(configTopic, 0, true, configPayload)
+	token.WaitTimeout(1 * time.Second)
+	if token.Error() != nil {
+		return fmt.Errorf("failed to publish config to MQTT: %w", token.Error())
 	}
 
-	payload, _ := json.Marshal(data)
-	url := fmt.Sprintf("%s/api/states/%s", HA_URL, entity)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payload))
-	req.Header.Set("Authorization", "Bearer "+haToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	res, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to push to HA: %w", err)
-	}
-	defer res.Body.Close()
-
-	body, _ := io.ReadAll(res.Body)
-	log.Println("HA Response:", res.Status, string(body))
-
-	if res.StatusCode != 200 {
-		return fmt.Errorf("HA API returned %s", res.Status)
+	// 发布状态
+	statePayload := fmt.Sprintf(`{"state": %.3f}`, state)
+	token = mqttClient.Publish(stateTopic, 0, true, statePayload)
+	if token.Error() != nil {
+		return fmt.Errorf("failed to publish state to MQTT: %w", token.Error())
 	}
 
+	log.Printf("MQTT published entity '%s': state=%.3f %s\n", entity, state, unit)
 	return nil
 }
