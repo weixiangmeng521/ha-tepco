@@ -5,8 +5,15 @@ FROM $BUILD_FROM
 RUN apk add --no-cache 
        
 # 安装 Chromium（Debian/Ubuntu）
-RUN apt-get update && apt-get install -y chromium chromium-driver fonts-freefont-ttf && \
-    rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+      chromium \
+      nss \
+      freetype \
+      ttf-freefont \
+      font-noto-cjk \ 
+      harfbuzz \
+      ca-certificates \
+      dumb-init
 
 # 让 go-rod 使用系统 Chromium
 ENV ROD_BROWSER_PATH=/usr/bin/chromium
