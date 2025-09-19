@@ -8,6 +8,7 @@ import (
 	"log"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,7 +57,7 @@ func main() {
 	}
 
 	log.Println("current OS: ", runtime.GOOS)
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS == "linux" {
 		mqttClient = newMQTTClient()
 		defer mqttClient.Disconnect(250)
 	}
@@ -70,7 +71,7 @@ func main() {
 func task(username, password string) string {
 	// 启动浏览器
 	var la *launcher.Launcher
-	if runtime.GOOS != "darwin" {
+	if runtime.GOOS == "linux" {
 		la = launcher.New().
 			Bin("/usr/bin/chromium").
 			Headless(true)
@@ -96,10 +97,8 @@ func task(username, password string) string {
 	defer browser.MustClose()
 
 	// 打开登录页面
-	page := browser.
-		MustPage(LOGIN_PAGE)
-
-	log.Println("Going to login...")
+	page := browser.MustPage(LOGIN_PAGE)
+	log.Println("Chromedriver startup is complete, Tring to login...\n")
 
 	page.MustWaitDOMStable()
 
@@ -109,42 +108,59 @@ func task(username, password string) string {
 		url := e.Response.URL
 		if err == nil {
 			// Get the usage data for this month and put it into MQTT
-			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month") {
+			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month?") {
+				log.Println("Tring to get this month data...")
 				json := string(body.Body)
+				log.Println("Response Body:", json)
 				obj := ParseMonthlyUsage(json)
 
-				log.Printf("Tring to push tepco_this_mon_cost: %.2f JPY\n", obj.BillInfo.UsedInfo.Charge)
-				if err := pushEnergySensor("sensor.tepco_this_mon_cost", obj.BillInfo.UsedInfo.Charge, "JPY", "monetary"); err != nil {
+				usedCharge := obj.BillInfo.UsedInfo.Charge
+				chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
+
+				usedPower := obj.BillInfo.UsedInfo.Power
+				powerFloat, _ := strconv.ParseFloat(usedPower, 64)
+
+				log.Printf("Tring to push tepco_this_mon_cost: %.2f JPY\n", chargeFloat)
+				if err := pushEnergySensor("sensor.tepco_this_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
 					log.Println("Err: ", err)
 				}
 
-				log.Printf("Tring to push tepco_this_mon_usage: %.2f kWh\n", obj.BillInfo.UsedInfo.Power)
-				if err := pushEnergySensor("sensor.tepco_this_mon_usage", obj.BillInfo.UsedInfo.Power, "kWh", "energy"); err != nil {
+				log.Printf("Tring to push tepco_this_mon_usage: %.2f kWh\n", powerFloat)
+				if err := pushEnergySensor("sensor.tepco_this_mon_usage", powerFloat, "kWh", "energy"); err != nil {
 					log.Println("Err: ", err)
 				}
+				log.Println()
 			}
 
 			// Get the usage data for last month usage and put it into MQTT
 			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month-history?contractClass=") {
+				log.Println("Tring to get last month data...")
 				json := string(body.Body)
+				log.Println("Response Body:", json)
+
 				obj := ParseMonthHistory(json)
 				billInfoList := obj.BillInfos
 				lastMonth := billInfoList[len(billInfoList)-1]
+				log.Println(lastMonth)
 
-				log.Printf("Tring to push tepco_last_mon_usage: %.2f JPY\n", lastMonth.DetailInfos[0].UsedCharge)
-				if err := pushEnergySensor("sensor.tepco_last_mon_cost", lastMonth.DetailInfos[0].UsedCharge, "JPY", "monetary"); err != nil {
+				usedCharge := lastMonth.DetailInfos[0].UsedCharge
+				chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
+
+				usedPower := lastMonth.DetailInfos[0].UsedPowerInfo.Power
+				powerFloat, _ := strconv.ParseFloat(usedPower, 64)
+
+				log.Printf("Tring to push tepco_last_mon_usage: %.2f JPY\n", chargeFloat)
+				if err := pushEnergySensor("sensor.tepco_last_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
 					log.Println("Err: ", err)
 				}
 
 				// 燃气费用
-				log.Printf("Tring to push tepco_last_mon_cost: %.2f kWh\n", lastMonth.DetailInfos[0].UsedPowerInfo.Power)
-				if err := pushEnergySensor("sensor.tepco_last_mon_usage", lastMonth.DetailInfos[0].UsedPowerInfo.Power, "kWh", "energy"); err != nil {
+				log.Printf("Tring to push tepco_last_mon_cost: %.2f kWh\n", powerFloat)
+				if err := pushEnergySensor("sensor.tepco_last_mon_usage", powerFloat, "kWh", "energy"); err != nil {
 					log.Println("Err: ", err)
 				}
+				log.Println()
 			}
-
-			// fmt.Println("Response URL:", url)
-			// fmt.Println("Response Body:", string(body.Body))
 		}
 	})()
 
@@ -181,6 +197,11 @@ func task(username, password string) string {
 
 // pushEnergySensor 推送一个能源面板可识别的传感器
 func pushEnergySensor(entity string, state float64, unit, deviceClass string) error {
+	if runtime.GOOS == "darwin" {
+		log.Println("Test push done.")
+		return nil
+	}
+
 	if mqttClient == nil {
 		mqttClient = newMQTTClient()
 	}
@@ -246,11 +267,11 @@ type MonthlyUsage struct {
 		} `json:"meterInfo"`
 
 		UsedInfo struct {
-			StartDate string  `json:"startDate"`
-			EndDate   string  `json:"endDate"`
-			Charge    float64 `json:"charge"`
-			Power     float64 `json:"power"`
-			Unit      string  `json:"unit"`
+			StartDate string `json:"startDate"`
+			EndDate   string `json:"endDate"`
+			Charge    string `json:"charge"`
+			Power     string `json:"power"`
+			Unit      string `json:"unit"`
 		} `json:"usedInfo"`
 
 		PredictionInfo struct {
@@ -281,11 +302,11 @@ type MonthHistory struct {
 		BillingStatus string `json:"billingStatus"`
 		ContractClass string `json:"contractClass,omitempty"`
 		DetailInfos   []struct {
-			BillingClass  string  `json:"billingClass"`
-			UsedCharge    float64 `json:"usedCharge"`
+			BillingClass  string `json:"billingClass"`
+			UsedCharge    string `json:"usedCharge"`
 			UsedPowerInfo struct {
-				Power float64 `json:"power"`
-				Unit  string  `json:"unit"`
+				Power string `json:"power"`
+				Unit  string `json:"unit"`
 			} `json:"usedPowerInfo"`
 			PaymentDateInfo struct {
 				PaymentDue      string `json:"paymentDue,omitempty"`
