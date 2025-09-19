@@ -2,18 +2,19 @@ package main
 
 import (
 	"crypto/md5"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"regexp"
-	"strconv"
+	"runtime"
 	"strings"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 const LOGIN_PAGE = "https://epauth.tepco.co.jp/u/login?state"
@@ -54,21 +55,31 @@ func main() {
 		log.Fatal("missing USERNAME, PASSWORD")
 	}
 
-	mqttClient = newMQTTClient()
-	defer mqttClient.Disconnect(250)
+	log.Println("current OS: ", runtime.GOOS)
+	if runtime.GOOS != "darwin" {
+		mqttClient = newMQTTClient()
+		defer mqttClient.Disconnect(250)
+	}
 
 	task(username, password)
 }
 
 /**
- *
+ * Main task
  */
 func task(username, password string) string {
 	// 启动浏览器
-	// 启动浏览器
-	l := launcher.New().
-		Bin("/usr/bin/chromium").
-		Headless(true).                                        // headless 模式
+	var la *launcher.Launcher
+	if runtime.GOOS != "darwin" {
+		la = launcher.New().
+			Bin("/usr/bin/chromium").
+			Headless(true)
+	}
+	if runtime.GOOS == "darwin" {
+		la = launcher.New().Headless(true)
+	}
+
+	l := la.
 		Set("no-sandbox", "").                                 // --no-sandbox
 		Set("disable-dev-shm-usage", "").                      // --disable-dev-shm-usage
 		Set("disable-gpu", "").                                // --disable-gpu
@@ -77,7 +88,7 @@ func task(username, password string) string {
 		Set("disable-blink-features", "AutomationControlled"). // --disable-blink-features=AutomationControlled
 		Set("ignore-certificate-errors", "").                  // --ignore-certificate-errors
 		Set("disable-extensions", "").                         // --disable-extensions
-		Set("window-size", "1920,1080").                       // --window-size=1920,1080
+		Set("window-size", "1200,1080").                       // --window-size=420,1080
 		Set("user-agent", "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36").
 		MustLaunch()
 
@@ -88,7 +99,54 @@ func task(username, password string) string {
 	page := browser.
 		MustPage(LOGIN_PAGE)
 
+	log.Println("Going to login...")
+
 	page.MustWaitDOMStable()
+
+	go page.EachEvent(func(e *proto.NetworkResponseReceived) {
+		body, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(page)
+
+		url := e.Response.URL
+		if err == nil {
+			// Get the usage data for this month and put it into MQTT
+			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month") {
+				json := string(body.Body)
+				obj := ParseMonthlyUsage(json)
+
+				log.Printf("Tring to push tepco_this_mon_cost: %.2f JPY\n", obj.BillInfo.UsedInfo.Charge)
+				if err := pushEnergySensor("sensor.tepco_this_mon_cost", obj.BillInfo.UsedInfo.Charge, "JPY", "monetary"); err != nil {
+					log.Println("Err: ", err)
+				}
+
+				log.Printf("Tring to push tepco_this_mon_usage: %.2f kWh\n", obj.BillInfo.UsedInfo.Power)
+				if err := pushEnergySensor("sensor.tepco_this_mon_usage", obj.BillInfo.UsedInfo.Power, "kWh", "energy"); err != nil {
+					log.Println("Err: ", err)
+				}
+			}
+
+			// Get the usage data for last month usage and put it into MQTT
+			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month-history?contractClass=") {
+				json := string(body.Body)
+				obj := ParseMonthHistory(json)
+				billInfoList := obj.BillInfos
+				lastMonth := billInfoList[len(billInfoList)-1]
+
+				log.Printf("Tring to push tepco_last_mon_usage: %.2f JPY\n", lastMonth.DetailInfos[0].UsedCharge)
+				if err := pushEnergySensor("sensor.tepco_last_mon_cost", lastMonth.DetailInfos[0].UsedCharge, "JPY", "monetary"); err != nil {
+					log.Println("Err: ", err)
+				}
+
+				// 燃气费用
+				log.Printf("Tring to push tepco_last_mon_cost: %.2f kWh\n", lastMonth.DetailInfos[0].UsedPowerInfo.Power)
+				if err := pushEnergySensor("sensor.tepco_last_mon_usage", lastMonth.DetailInfos[0].UsedPowerInfo.Power, "kWh", "energy"); err != nil {
+					log.Println("Err: ", err)
+				}
+			}
+
+			// fmt.Println("Response URL:", url)
+			// fmt.Println("Response Body:", string(body.Body))
+		}
+	})()
 
 	// 填写用户名和密码
 	page.MustElement("input[name='username']").MustInput(username)
@@ -105,9 +163,6 @@ func task(username, password string) string {
 		return ""
 	}
 
-	// initlize http cline
-	client := &http.Client{}
-
 	// 正则匹配 span 标签内容（去掉内部 icon span）
 	re := regexp.MustCompile(`(?s)<span[^>]*id="error-element-password"[^>]*>.*?</span>\s*([^<]+)</span>`)
 	matches := re.FindStringSubmatch(html)
@@ -121,144 +176,11 @@ func task(username, password string) string {
 	page.MustWaitNavigation()
 	page.MustWaitDOMStable()
 	log.Println("Login Successful.")
-
-	log.Printf("Info: close popup")
-
-	// close ads script
-	exeCloseAdsScript(page)
-
-	lastMonPowerDataList := exeGetLastestMonCostAndUsageScript(page)
-	log.Printf("Last month cost money: %d 円, usage: %d kWh\n", lastMonPowerDataList[0], lastMonPowerDataList[1])
-
-	thisMonPowerDataList := exeGetThisMonCostAndUsageScript(page)
-	log.Printf("This month cost money: %d 円, usage: %d kWh\n", thisMonPowerDataList[0], thisMonPowerDataList[1])
-
-	//
-	log.Println("Tring to push tepco_last_mon_usage")
-	if err := pushEnergySensor(client, "sensor.tepco_last_mon_cost", float64(lastMonPowerDataList[0]), "JPY", "monetary"); err != nil {
-		log.Println("Err: ", err)
-	}
-
-	// 燃气费用
-	log.Println("Tring to push tepco_last_mon_cost")
-	if err := pushEnergySensor(client, "sensor.tepco_last_mon_usage", float64(lastMonPowerDataList[1]), "kWh", "energy"); err != nil {
-		log.Println("Err: ", err)
-	}
-
-	//
-	log.Println("Tring to push tepco_this_mon_cost")
-	if err := pushEnergySensor(client, "sensor.tepco_this_mon_cost", float64(thisMonPowerDataList[0]), "JPY", "monetary"); err != nil {
-		log.Println("Err: ", err)
-	}
-
-	log.Println("Tring to push tepco_this_mon_usage")
-	if err := pushEnergySensor(client, "sensor.tepco_this_mon_usage", float64(thisMonPowerDataList[1]), "kWh", "energy"); err != nil {
-		log.Println("Err: ", err)
-	}
-
 	return ""
 }
 
-// 执行关闭广告的脚本
-func exeCloseAdsScript(page *rod.Page) {
-	// close ads script
-	javascript := rod.Eval(`
-		() => {
-		 	const list = ["close_icon", "close_about", "close_button", "btn_close"];
-		 	list.forEach((el) => {
-				const nodeList = document.getElementsByClassName(el);
-				Array.from(nodeList).forEach((node) => {
-					node.click();
-				})
-			})
-			return void 0;
-		}`)
-
-	for closeAttempts := 0; ; closeAttempts++ {
-		log.Println("Tring to close ads")
-		if _, err := page.Evaluate(javascript); err != nil {
-			log.Printf("error: %v\n", err)
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-		if closeAttempts > 20 {
-			break
-		}
-	}
-}
-
-// 获取最近一个月的电费和使用量
-func exeGetLastestMonCostAndUsageScript(page *rod.Page) [2]int {
-	log.Println("Execute get lastest Month Cost script...")
-	// close ads script
-	javascript := rod.Eval(`
-		() => {
-		 	document.querySelector("#gaclick_top_graph_yen").click();
-			const btnList = Array.from(document.querySelector("ul.month_list").childNodes).filter(e => e.nodeName !== "#comment");
-			const target = btnList[btnList.length - 2];
-			target.click();
-			const cost = document.querySelector("p.price.selected_month").innerText;
-			document.querySelector("#gaclick_top_graph_kwh").click();
-			const usage = document.querySelector("p.price.selected_month").innerText;
-			return usage + "|" + cost
-		}`)
-
-	log.Println("Tring to excute javascript")
-	cost, err := page.Evaluate(javascript)
-	if err != nil {
-		log.Printf("error: %v\n", err)
-		return [2]int{0, 0}
-	}
-	time.Sleep(300 * time.Millisecond)
-
-	result := cost.Value.Str()
-	list := strings.Split(result, "|")
-	return [2]int{extractNumberInt(list[0]), extractNumberInt(list[1])}
-}
-
-// 获取本月的电费
-func exeGetThisMonCostAndUsageScript(page *rod.Page) [2]int {
-	log.Println("Execute get this Month cost script...")
-	javascript := rod.Eval(`
-		() => {
-		 	document.querySelector("#gaclick_top_graph_yen").click();
-			const btnList = Array.from(document.querySelector("ul.month_list").childNodes).filter(e => e.nodeName !== "#comment");
-			const target = btnList[btnList.length - 1];
-			target.click();
-			const cost = document.querySelector("p.price.selected_month").innerText;
-			document.querySelector("#gaclick_top_graph_kwh").click();
-			const usage = document.querySelector("p.price.selected_month").innerText;
-			return usage + "|" + cost
-		}`)
-
-	log.Println("Tring to excute javascript")
-	cost, err := page.Evaluate(javascript)
-	if err != nil {
-		log.Printf("error: %v\n", err)
-		return [2]int{0, 0}
-	}
-	time.Sleep(300 * time.Millisecond)
-
-	result := cost.Value.Str()
-	list := strings.Split(result, "|")
-	return [2]int{extractNumberInt(list[0]), extractNumberInt(list[1])}
-}
-
-func extractNumber(s string) string {
-	re := regexp.MustCompile(`[\d,]+`)
-	match := re.FindString(s)
-	// 去掉逗号
-	return strings.ReplaceAll(match, ",", "")
-}
-
-func extractNumberInt(s string) int {
-	str := extractNumber(s)
-	n, _ := strconv.Atoi(str)
-	return n
-}
-
 // pushEnergySensor 推送一个能源面板可识别的传感器
-func pushEnergySensor(client *http.Client, entity string, state float64, unit, deviceClass string) error {
+func pushEnergySensor(entity string, state float64, unit, deviceClass string) error {
 	if mqttClient == nil {
 		mqttClient = newMQTTClient()
 	}
@@ -304,4 +226,83 @@ func pushEnergySensor(client *http.Client, entity string, state float64, unit, d
 
 	log.Printf("MQTT published entity '%s': state=%.3f %s\n", entity, state, unit)
 	return nil
+}
+
+// 定义结构体
+type MonthlyUsage struct {
+	CommonInfo struct {
+		Timestamp string `json:"timestamp"`
+	} `json:"commonInfo"`
+
+	BillInfo struct {
+		UsedMonth            string `json:"usedMonth"`
+		BillingStatus        string `json:"billingStatus"`
+		ElectricRateCategory string `json:"electricRateCategory"`
+		TimezonePrice        string `json:"timezonePrice"`
+
+		MeterInfo struct {
+			StartDate string `json:"startDate"`
+			EndDate   string `json:"endDate"`
+		} `json:"meterInfo"`
+
+		UsedInfo struct {
+			StartDate string  `json:"startDate"`
+			EndDate   string  `json:"endDate"`
+			Charge    float64 `json:"charge"`
+			Power     float64 `json:"power"`
+			Unit      string  `json:"unit"`
+		} `json:"usedInfo"`
+
+		PredictionInfo struct {
+			Charge string `json:"charge"`
+			Power  string `json:"power"`
+			Unit   string `json:"unit"`
+		} `json:"predictionInfo"`
+	} `json:"billInfo"`
+}
+
+/**
+ * 反序列化每月用量
+ */
+func ParseMonthlyUsage(jsonStr string) *MonthlyUsage {
+	var data MonthlyUsage
+	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+		panic(err)
+	}
+	return &data
+}
+
+type MonthHistory struct {
+	CommonInfo struct {
+		Timestamp string `json:"timestamp"`
+	} `json:"commonInfo"`
+	BillInfos []struct {
+		UsedMonth     string `json:"usedMonth"`
+		BillingStatus string `json:"billingStatus"`
+		ContractClass string `json:"contractClass,omitempty"`
+		DetailInfos   []struct {
+			BillingClass  string  `json:"billingClass"`
+			UsedCharge    float64 `json:"usedCharge"`
+			UsedPowerInfo struct {
+				Power float64 `json:"power"`
+				Unit  string  `json:"unit"`
+			} `json:"usedPowerInfo"`
+			PaymentDateInfo struct {
+				PaymentDue      string `json:"paymentDue,omitempty"`
+				AccountTransfer string `json:"accountTransfer,omitempty"`
+				NextBilling     string `json:"nextBilling,omitempty"`
+			} `json:"paymentDateInfo,omitempty"`
+		} `json:"detailInfos,omitempty"`
+	} `json:"billInfos"`
+}
+
+/**
+ * 反序列化每月用量
+ */
+func ParseMonthHistory(jsonStr string) *MonthHistory {
+	var data MonthHistory
+	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+		panic(err)
+	}
+	return &data
 }
