@@ -1,8 +1,6 @@
+![Alt text](./icon.png)
 # ha-TEPCO
 An unofficial Home Assistant add-on for monitoring electricity usage from TEPCO (Tokyo Electric Power Company).
---- 
-![Alt text](./logo.png)
-
 
 ## Features
 - Update current month power usage and cost.
