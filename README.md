@@ -1,5 +1,6 @@
-![Alt text](./icon.png)
 # ha-TEPCO
+<img src="icon.png" alt="Icon" width="150">
+
 An unofficial Home Assistant add-on for monitoring electricity usage from TEPCO (Tokyo Electric Power Company).
 
 ## Features
