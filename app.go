@@ -69,10 +69,24 @@ func main() {
  * get current year + month
  * usually month plus one
  */
-func getCurMonthAndYear() string {
+func getNextValidMonthAndYear() string {
 	now := time.Now()
 	year, month, _ := now.Date()
+	if month+1 > 12 {
+		year += 1
+		month = 0
+	}
 	result := fmt.Sprintf("%d%02d", year, month+1)
+	return result
+}
+
+/**
+ * get current year + month
+ */
+func getThisValidMonthAndYear() string {
+	now := time.Now()
+	year, month, _ := now.Date()
+	result := fmt.Sprintf("%d%02d", year, month)
 	return result
 }
 
@@ -115,17 +129,18 @@ func task(username, password string) string {
 
 	go page.EachEvent(func(e *proto.NetworkResponseReceived) {
 		body, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(page)
-
 		url := e.Response.URL
+		hasUploadedLastMonthDataFlag := false
+
 		if err == nil {
 			// Get the usage data for this month and put it into MQTT
 			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month?") {
-				log.Println("Tring to get this month data...")
+				log.Println("Tring to get data from billing/month...")
 				json := string(body.Body)
 				log.Println("Response Body:", json)
 				obj := ParseMonthlyUsage(json)
-				log.Println("Current year and month: ", getCurMonthAndYear())
-				if obj.BillInfo.UsedMonth == getCurMonthAndYear() {
+				log.Println("Current year and month: ", getNextValidMonthAndYear())
+				if obj.BillInfo.UsedMonth == getNextValidMonthAndYear() {
 					usedCharge := obj.BillInfo.UsedInfo.Charge
 					chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
 
@@ -143,36 +158,62 @@ func task(username, password string) string {
 					}
 					log.Println()
 				}
+
+				// Get the usage data for last month usage and put it into MQTT
+				if !hasUploadedLastMonthDataFlag && obj.BillInfo.UsedMonth == getThisValidMonthAndYear() {
+					usedCharge := obj.BillInfo.UsedInfo.Charge
+					chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
+
+					usedPower := obj.BillInfo.UsedInfo.Power
+					powerFloat, _ := strconv.ParseFloat(usedPower, 64)
+
+					log.Printf("Tring to push tepco_last_mon_usage: %.2f JPY\n", chargeFloat)
+					if err := pushEnergySensor("sensor.tepco_last_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
+						log.Println("Err: ", err)
+					}
+
+					// 燃气费用
+					log.Printf("Tring to push tepco_last_mon_cost: %.2f kWh\n", powerFloat)
+					if err := pushEnergySensor("sensor.tepco_last_mon_usage", powerFloat, "kWh", "energy"); err != nil {
+						log.Println("Err: ", err)
+					}
+					log.Println()
+					hasUploadedLastMonthDataFlag = true
+				}
 			}
 
 			// Get the usage data for last month usage and put it into MQTT
 			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month-history?contractClass=") {
-				log.Println("Tring to get last month data...")
+				log.Println("Tring to get data from billing/month-history")
 				json := string(body.Body)
 				log.Println("Response Body:", json)
-
 				obj := ParseMonthHistory(json)
 				billInfoList := obj.BillInfos
 				lastMonth := billInfoList[len(billInfoList)-1]
-				log.Println(lastMonth)
 
-				usedCharge := lastMonth.DetailInfos[0].UsedCharge
-				chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
+				usedMonth := lastMonth.UsedMonth
+				log.Println("Last month: ", usedMonth)
+				// if valid then upload last month data, avoid the month before last
+				if !hasUploadedLastMonthDataFlag && usedMonth == getThisValidMonthAndYear() {
+					usedCharge := lastMonth.DetailInfos[0].UsedCharge
+					chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
 
-				usedPower := lastMonth.DetailInfos[0].UsedPowerInfo.Power
-				powerFloat, _ := strconv.ParseFloat(usedPower, 64)
+					usedPower := lastMonth.DetailInfos[0].UsedPowerInfo.Power
+					powerFloat, _ := strconv.ParseFloat(usedPower, 64)
 
-				log.Printf("Tring to push tepco_last_mon_usage: %.2f JPY\n", chargeFloat)
-				if err := pushEnergySensor("sensor.tepco_last_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
-					log.Println("Err: ", err)
+					log.Printf("Tring to push tepco_last_mon_usage: %.2f JPY\n", chargeFloat)
+					if err := pushEnergySensor("sensor.tepco_last_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
+						log.Println("Err: ", err)
+					}
+
+					// 燃气费用
+					log.Printf("Tring to push tepco_last_mon_cost: %.2f kWh\n", powerFloat)
+					if err := pushEnergySensor("sensor.tepco_last_mon_usage", powerFloat, "kWh", "energy"); err != nil {
+						log.Println("Err: ", err)
+					}
+					log.Println()
+					hasUploadedLastMonthDataFlag = true
 				}
-
-				// 燃气费用
-				log.Printf("Tring to push tepco_last_mon_cost: %.2f kWh\n", powerFloat)
-				if err := pushEnergySensor("sensor.tepco_last_mon_usage", powerFloat, "kWh", "energy"); err != nil {
-					log.Println("Err: ", err)
-				}
-				log.Println()
 			}
 		}
 	})()
