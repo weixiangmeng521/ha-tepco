@@ -66,6 +66,17 @@ func main() {
 }
 
 /**
+ * get current year + month
+ * usually month plus one
+ */
+func getCurMonthAndYear() string {
+	now := time.Now()
+	year, month, _ := now.Date()
+	result := fmt.Sprintf("%d%02d", year, month+1)
+	return result
+}
+
+/**
  * Main task
  */
 func task(username, password string) string {
@@ -77,7 +88,7 @@ func task(username, password string) string {
 			Headless(true)
 	}
 	if runtime.GOOS == "darwin" {
-		la = launcher.New().Headless(true)
+		la = launcher.New().Headless(false)
 	}
 
 	l := la.
@@ -98,7 +109,7 @@ func task(username, password string) string {
 
 	// 打开登录页面
 	page := browser.MustPage(LOGIN_PAGE)
-	log.Println("Chromedriver startup is complete, Tring to login...\n")
+	log.Println("Chromedriver startup is complete, Tring to login...")
 
 	page.MustWaitDOMStable()
 
@@ -113,23 +124,25 @@ func task(username, password string) string {
 				json := string(body.Body)
 				log.Println("Response Body:", json)
 				obj := ParseMonthlyUsage(json)
+				log.Println("Current year and month: ", getCurMonthAndYear())
+				if obj.BillInfo.UsedMonth == getCurMonthAndYear() {
+					usedCharge := obj.BillInfo.UsedInfo.Charge
+					chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
 
-				usedCharge := obj.BillInfo.UsedInfo.Charge
-				chargeFloat, _ := strconv.ParseFloat(usedCharge, 64)
+					usedPower := obj.BillInfo.UsedInfo.Power
+					powerFloat, _ := strconv.ParseFloat(usedPower, 64)
 
-				usedPower := obj.BillInfo.UsedInfo.Power
-				powerFloat, _ := strconv.ParseFloat(usedPower, 64)
+					log.Printf("Tring to push tepco_this_mon_cost: %.2f JPY\n", chargeFloat)
+					if err := pushEnergySensor("sensor.tepco_this_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
+						log.Println("Err: ", err)
+					}
 
-				log.Printf("Tring to push tepco_this_mon_cost: %.2f JPY\n", chargeFloat)
-				if err := pushEnergySensor("sensor.tepco_this_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
-					log.Println("Err: ", err)
+					log.Printf("Tring to push tepco_this_mon_usage: %.2f kWh\n", powerFloat)
+					if err := pushEnergySensor("sensor.tepco_this_mon_usage", powerFloat, "kWh", "energy"); err != nil {
+						log.Println("Err: ", err)
+					}
+					log.Println()
 				}
-
-				log.Printf("Tring to push tepco_this_mon_usage: %.2f kWh\n", powerFloat)
-				if err := pushEnergySensor("sensor.tepco_this_mon_usage", powerFloat, "kWh", "energy"); err != nil {
-					log.Println("Err: ", err)
-				}
-				log.Println()
 			}
 
 			// Get the usage data for last month usage and put it into MQTT
