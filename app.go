@@ -22,9 +22,12 @@ const LOGIN_PAGE = "https://epauth.tepco.co.jp/u/login?state"
 
 const (
 	Broker   = "mqtt://core-mosquitto:1883"
-	Username = "addons"
-	Password = "aiteab5elia9hee9ahp5chaoG1aegohcahzie9iigaewiaPeiquu1lau9Ho5Ooje"
 	ClientID = "myenecle-clinet"
+)
+
+var (
+	TEPCO2MQTT_CONFIG_MQTT_USERNAME string
+	TEPCO2MQTT_CONFIG_MQTT_PASSWORD string
 )
 
 var mqttClient mqtt.Client
@@ -33,8 +36,8 @@ var mqttClient mqtt.Client
 func newMQTTClient() mqtt.Client {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(Broker)
-	opts.SetUsername(Username)
-	opts.SetPassword(Password)
+	opts.SetUsername(TEPCO2MQTT_CONFIG_MQTT_USERNAME)
+	opts.SetPassword(TEPCO2MQTT_CONFIG_MQTT_PASSWORD)
 	opts.SetClientID(ClientID)
 	opts.SetConnectTimeout(5 * time.Second)
 
@@ -50,18 +53,15 @@ func main() {
 	var password string
 	flag.StringVar(&username, "u", "", "-u username")
 	flag.StringVar(&password, "p", "", "-p password")
+	flag.StringVar(&TEPCO2MQTT_CONFIG_MQTT_USERNAME, "mqtt_username", "", "-mqtt_username password")
+	flag.StringVar(&TEPCO2MQTT_CONFIG_MQTT_PASSWORD, "mqtt_password", "", "-mqtt_password password")
 	flag.Parse()
 
-	if username == "" || password == "" {
-		log.Fatal("missing USERNAME, PASSWORD")
+	if username == "" || password == "" || TEPCO2MQTT_CONFIG_MQTT_USERNAME == "" || TEPCO2MQTT_CONFIG_MQTT_PASSWORD == "" {
+		log.Fatal("missing USERNAME, PASSWORD, TEPCO2MQTT_CONFIG_MQTT_PASSWORD, TEPCO2MQTT_CONFIG_MQTT_USERNAME")
 	}
 
 	log.Println("current OS: ", runtime.GOOS)
-	if runtime.GOOS == "linux" {
-		mqttClient = newMQTTClient()
-		defer mqttClient.Disconnect(250)
-	}
-
 	task(username, password)
 }
 
@@ -94,16 +94,18 @@ func getThisValidMonthAndYear() string {
  * Main task
  */
 func task(username, password string) string {
+	mqttClient = newMQTTClient()
+	defer mqttClient.Disconnect(250)
 	// 启动浏览器
-	var la *launcher.Launcher
-	if runtime.GOOS == "linux" {
-		la = launcher.New().
-			Bin("/usr/bin/chromium").
-			Headless(true)
-	}
-	if runtime.GOOS == "darwin" {
-		la = launcher.New().Headless(false)
-	}
+	// var la *launcher.Launcher
+
+	la := launcher.New().
+		Bin("/usr/bin/chromium").
+		Headless(true)
+
+	// if runtime.GOOS == "darwin" {
+	// 	la = launcher.New().Headless(false)
+	// }
 
 	l := la.
 		Set("no-sandbox", "").                                 // --no-sandbox
