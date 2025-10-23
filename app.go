@@ -95,6 +95,13 @@ func getThisValidMonthAndYear() string {
  */
 func task(username, password string) string {
 	mqttClient = newMQTTClient()
+	defer func() {
+		if mqttClient != nil {
+			mqttClient.Disconnect(250)
+			mqttClient = nil
+		}
+	}()
+
 	// 启动浏览器
 	// var la *launcher.Launcher
 
