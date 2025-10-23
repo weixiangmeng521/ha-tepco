@@ -95,19 +95,12 @@ func getThisValidMonthAndYear() string {
  */
 func task(username, password string) string {
 	mqttClient = newMQTTClient()
-	defer mqttClient.Disconnect(250)
 	// 启动浏览器
 	// var la *launcher.Launcher
 
 	la := launcher.New().
 		Bin("/usr/bin/chromium").
-		Headless(true)
-
-	// if runtime.GOOS == "darwin" {
-	// 	la = launcher.New().Headless(false)
-	// }
-
-	l := la.
+		Headless(true).
 		Set("no-sandbox", "").                                 // --no-sandbox
 		Set("disable-dev-shm-usage", "").                      // --disable-dev-shm-usage
 		Set("disable-gpu", "").                                // --disable-gpu
@@ -120,7 +113,7 @@ func task(username, password string) string {
 		Set("user-agent", "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36").
 		MustLaunch()
 
-	browser := rod.New().ControlURL(l).MustConnect()
+	browser := rod.New().ControlURL(la).MustConnect()
 	defer browser.MustClose()
 
 	// 打开登录页面
@@ -248,6 +241,7 @@ func task(username, password string) string {
 	page.MustWaitNavigation()
 	page.MustWaitDOMStable()
 	log.Println("Login Successful.")
+	defer mqttClient.Disconnect(250)
 	return ""
 }
 
