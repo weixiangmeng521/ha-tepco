@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -32,8 +33,26 @@ var (
 
 var mqttClient mqtt.Client
 
+// is local debug envoriment
+func isLocal() bool {
+	_, err := os.Stat(".local") // 检查当前目录下 .local 文件
+	if err == nil {
+		return true // 文件存在
+	}
+	if os.IsNotExist(err) {
+		return false // 文件不存在
+	}
+	// 其他错误
+	fmt.Println("Error checking .local file:", err)
+	return false
+}
+
 // MQTT 客户端初始化示例
 func newMQTTClient() mqtt.Client {
+	if isLocal() {
+		log.Println("Debug env.")
+		return nil
+	}
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(Broker)
 	opts.SetUsername(TEPCO2MQTT_CONFIG_MQTT_USERNAME)
@@ -62,6 +81,7 @@ func main() {
 	}
 
 	log.Println("current OS: ", runtime.GOOS)
+
 	mqttClient = newMQTTClient()
 	defer func() {
 		if mqttClient != nil {
@@ -104,10 +124,21 @@ func getThisValidMonthAndYear() string {
 func task(username, password string) string {
 	// 启动浏览器
 	// var la *launcher.Launcher
+	IS_LOCAL := isLocal()
+	var la *launcher.Launcher
 
-	la := launcher.New().
-		Bin("/usr/bin/chromium").
-		Headless(true).
+	if IS_LOCAL {
+		la = launcher.New().
+			Headless(false)
+	}
+
+	if !IS_LOCAL {
+		la = launcher.New().
+			Bin("/usr/bin/chromium").
+			Headless(true)
+	}
+
+	l := la.
 		Set("no-sandbox", "").                                 // --no-sandbox
 		Set("disable-dev-shm-usage", "").                      // --disable-dev-shm-usage
 		Set("disable-gpu", "").                                // --disable-gpu
@@ -120,7 +151,7 @@ func task(username, password string) string {
 		Set("user-agent", "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36").
 		MustLaunch()
 
-	browser := rod.New().ControlURL(la).MustConnect()
+	browser := rod.New().ControlURL(l).MustConnect()
 	defer browser.MustClose()
 
 	// 打开登录页面
@@ -248,13 +279,12 @@ func task(username, password string) string {
 	page.MustWaitNavigation()
 	page.MustWaitDOMStable()
 	log.Println("Login Successful.")
-	defer mqttClient.Disconnect(250)
 	return ""
 }
 
 // pushEnergySensor 推送一个能源面板可识别的传感器
 func pushEnergySensor(entity string, state float64, unit, deviceClass string) error {
-	if runtime.GOOS == "darwin" {
+	if isLocal() {
 		log.Println("Test push done.")
 		return nil
 	}
