@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64, arm64, arm]
+        arch: [amd64, arm64, arm, 386]
 
     steps:
       - uses: actions/checkout@v4
@@ -34,11 +34,14 @@ jobs:
             arm)
               GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -o build/tepco-linux-arm .
               ;;
+            386)
+              GOOS=linux GOARCH=386 CGO_ENABLED=0 go build -o build/tepco-linux-x86 .
+              ;;
           esac
+
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
           files: build/*
-          
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
