@@ -64,7 +64,7 @@ RUN echo "going to download bin file."
 
 RUN \
     curl -L -o /usr/bin/tepco \
-    "https://github.com/weixiangmeng521/ha-tepco/releases/download/v5.0.8/tepco-linux-${BUILD_ARCH}" \
+    "https://github.com/weixiangmeng521/ha-tepco/releases/download/v5.0.9/tepco-linux-${BUILD_ARCH}" \
     && chmod +x /usr/bin/tepco \
     && echo "✅ tepco downloaded" \
     && ls -lh /usr/bin/tepco

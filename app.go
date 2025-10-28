@@ -15,6 +15,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 )
@@ -91,6 +92,7 @@ func main() {
 	}()
 
 	task(username, password)
+	os.Exit(0)
 }
 
 func safeNavigate(browser *rod.Browser, url string) *rod.Page {
@@ -234,8 +236,8 @@ func task(username, password string) string {
 					if err := pushEnergySensor("sensor.tepco_last_mon_usage", powerFloat, "kWh", "energy"); err != nil {
 						log.Println("Err: ", err)
 					}
-					log.Println()
 					hasUploadedLastMonthDataFlag = true
+					log.Println()
 				}
 			}
 
@@ -278,9 +280,42 @@ func task(username, password string) string {
 	// 填写用户名和密码
 	page.MustElement("input[name='username']").MustInput(username)
 	page.MustElement("input[name='password']").MustInput(password)
+
 	page.MustWaitIdle()
-	// // 提交表单
-	page.MustElement(`button[value="default"]`).MustClick()
+	// 尝试查找“ログイン”按钮
+	btns, _ := page.Elements("button[type='submit']")
+	var clicked bool
+	for _, b := range btns {
+		txt, _ := b.Text()
+		visible, _ := b.Visible()
+		if visible && (strings.Contains(txt, "ログイン") || strings.Contains(txt, "Login")) {
+			page.Eval(`
+				(() => {
+					// 获取所有按钮
+					const buttons = document.querySelectorAll('button');
+					for (const b of buttons) {
+						const txt = b.innerText || b.textContent;
+						const style = window.getComputedStyle(b);
+						// 判断按钮是否可见，并且文字包含 ログイン 或 Login
+						if (txt && (txt.includes("ログイン") || txt.includes("Login")) && style.display !== "none" && style.visibility !== "hidden") {
+							b.style.pointerEvents = 'auto'; // 确保可以点击
+							b.disabled = false;
+							b.click(); // 触发点击
+							return true; // 点击成功，退出循环
+						}
+					}
+					return false; // 没找到按钮
+				})()
+			`)
+		}
+	}
+
+	if !clicked {
+		log.Println("⚠️ No visible login button found, pressing Enter instead")
+		page.MustElement("input[name='password']").MustType(input.Enter)
+	}
+
+	// 等待跳转
 	page.MustWaitNavigation()
 
 	page.MustWaitDOMStable()
@@ -303,6 +338,7 @@ func task(username, password string) string {
 	page.MustWaitNavigation()
 	page.MustWaitDOMStable()
 	log.Println("Login Successful.")
+
 	return ""
 }
 
