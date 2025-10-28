@@ -93,6 +93,30 @@ func main() {
 	task(username, password)
 }
 
+func safeNavigate(browser *rod.Browser, url string) *rod.Page {
+	var page *rod.Page
+
+	for i := 0; i < 3; i++ {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("navigation failed: %v (retrying %d/3...)", r, i+1)
+					time.Sleep(3 * time.Second)
+				}
+			}()
+			page = browser.MustPage(url)
+			page.MustWaitLoad()
+		}()
+
+		if page != nil {
+			return page
+		}
+	}
+
+	log.Fatalf("navigation failed after 3 retries for %s", url)
+	return nil
+}
+
 /**
  * get current year + month
  * usually month plus one
@@ -155,7 +179,7 @@ func task(username, password string) string {
 	defer browser.MustClose()
 
 	// 打开登录页面
-	page := browser.MustPage(LOGIN_PAGE)
+	page := safeNavigate(browser, LOGIN_PAGE)
 	log.Println("Chromedriver startup is complete, Tring to login...")
 
 	page.MustWaitDOMStable()
