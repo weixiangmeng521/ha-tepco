@@ -91,7 +91,14 @@ func main() {
 		}
 	}()
 
-	task(username, password)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Task crashed: %v (safe recovered)\n", r)
+			}
+		}()
+		task(username, password)
+	}()
 	os.Exit(0)
 }
 
@@ -183,18 +190,22 @@ func task(username, password string) string {
 	// 打开登录页面
 	page := safeNavigate(browser, LOGIN_PAGE)
 	log.Println("Chromedriver startup is complete, Tring to login...")
-
+	// wait
+	page, cancel := page.WithCancel()
+	defer func() {
+		_ = page.Close()
+	}()
 	page.MustWaitDOMStable()
 
+	state := 0
 	go page.EachEvent(func(e *proto.NetworkResponseReceived) {
 		body, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(page)
 		url := e.Response.URL
 		hasUploadedLastMonthDataFlag := false
-
 		if err == nil {
 			// Get the usage data for this month and put it into MQTT
 			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month?") {
-				log.Println("Tring to get data from billing/month...")
+				log.Println("######### Tring to get data from billing/month...")
 				json := string(body.Body)
 				log.Println("Response Body:", json)
 				obj := ParseMonthlyUsage(json)
@@ -216,6 +227,12 @@ func task(username, password string) string {
 						log.Println("Err: ", err)
 					}
 					log.Println()
+					state++
+					if state >= 1 {
+						log.Println("All data uploaded...")
+						cancel()
+						return
+					}
 				}
 
 				// Get the usage data for last month usage and put it into MQTT
@@ -226,24 +243,31 @@ func task(username, password string) string {
 					usedPower := obj.BillInfo.UsedInfo.Power
 					powerFloat, _ := strconv.ParseFloat(usedPower, 64)
 
-					log.Printf("Tring to push tepco_last_mon_usage: %.2f JPY\n", chargeFloat)
+					log.Printf("Tring to push tepco_last_mon_cost: %.2f JPY\n", chargeFloat)
 					if err := pushEnergySensor("sensor.tepco_last_mon_cost", chargeFloat, "JPY", "monetary"); err != nil {
 						log.Println("Err: ", err)
 					}
 
 					// 燃气费用
-					log.Printf("Tring to push tepco_last_mon_cost: %.2f kWh\n", powerFloat)
+					log.Printf("Tring to push tepco_last_mon_usage: %.2f kWh\n", powerFloat)
 					if err := pushEnergySensor("sensor.tepco_last_mon_usage", powerFloat, "kWh", "energy"); err != nil {
 						log.Println("Err: ", err)
 					}
 					hasUploadedLastMonthDataFlag = true
 					log.Println()
+					state++
+					if state >= 1 {
+						log.Println("All data uploaded...")
+						cancel()
+						return
+					}
 				}
 			}
 
 			// Get the usage data for last month usage and put it into MQTT
+			// https://kcx-api.tepco-z.com/kcx/billing/month-history?contractClass=02&contractNum=4019874740&term=25&readOffset=0
 			if strings.HasPrefix(url, "https://kcx-api.tepco-z.com/kcx/billing/month-history?contractClass=") {
-				log.Println("Tring to get data from billing/month-history")
+				log.Println("######### Tring to get data from billing/month-history")
 				json := string(body.Body)
 				log.Println("Response Body:", json)
 				obj := ParseMonthHistory(json)
@@ -272,6 +296,12 @@ func task(username, password string) string {
 					}
 					log.Println()
 					hasUploadedLastMonthDataFlag = true
+					state++
+					if state >= 1 {
+						log.Println("All data uploaded...")
+						cancel()
+						return
+					}
 				}
 			}
 		}
@@ -337,8 +367,11 @@ func task(username, password string) string {
 	}
 	page.MustWaitNavigation()
 	page.MustWaitDOMStable()
-	log.Println("Login Successful.")
+	log.Println("Login Successful...")
 
+	// 等待 page 结束
+	<-page.GetContext().Done()
+	browser.MustClose()
 	return ""
 }
 
