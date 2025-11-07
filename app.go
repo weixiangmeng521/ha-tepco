@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"flag"
@@ -23,8 +24,9 @@ import (
 const LOGIN_PAGE = "https://epauth.tepco.co.jp/u/login?state"
 
 const (
-	Broker   = "mqtt://core-mosquitto:1883"
-	ClientID = "myenecle-clinet"
+	Broker      = "mqtt://core-mosquitto:1883"
+	ClientID    = "myenecle-clinet"
+	MaxTaskTime = 15
 )
 
 var (
@@ -190,14 +192,26 @@ func task(username, password string) string {
 	// 打开登录页面
 	page := safeNavigate(browser, LOGIN_PAGE)
 	log.Println("Chromedriver startup is complete, Tring to login...")
+
 	// wait
+	ctx, timeoutCancel := context.WithTimeout(context.Background(), MaxTaskTime*time.Second)
+	log.Printf(">>> Waiting (%ds) to shutdown.", MaxTaskTime)
+	defer timeoutCancel()
+
 	page, cancel := page.WithCancel()
 	defer func() {
 		_ = page.Close()
 	}()
+
+	// 如果到了 30s 自动 cancel
+	go func() {
+		<-ctx.Done()
+		log.Printf(">>>Timeout reached (%ds), stopping page...", MaxTaskTime)
+		cancel() // stop rod listeners & navigation
+	}()
+
 	page.MustWaitDOMStable()
 
-	state := 0
 	go page.EachEvent(func(e *proto.NetworkResponseReceived) {
 		body, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(page)
 		url := e.Response.URL
@@ -227,12 +241,6 @@ func task(username, password string) string {
 						log.Println("Err: ", err)
 					}
 					log.Println()
-					state++
-					if state >= 1 {
-						log.Println("All data uploaded...")
-						cancel()
-						return
-					}
 				}
 
 				// Get the usage data for last month usage and put it into MQTT
@@ -255,12 +263,6 @@ func task(username, password string) string {
 					}
 					hasUploadedLastMonthDataFlag = true
 					log.Println()
-					state++
-					if state >= 1 {
-						log.Println("All data uploaded...")
-						cancel()
-						return
-					}
 				}
 			}
 
@@ -296,12 +298,6 @@ func task(username, password string) string {
 					}
 					log.Println()
 					hasUploadedLastMonthDataFlag = true
-					state++
-					if state >= 1 {
-						log.Println("All data uploaded...")
-						cancel()
-						return
-					}
 				}
 			}
 		}
